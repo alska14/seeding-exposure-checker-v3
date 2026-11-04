@@ -1,0 +1,15 @@
+# 비공개 데이터: 절대 올리지 않기
+.env
+config.yaml
+work/
+output/
+*.xlsx
+!sample_seeding_list.xlsx
+reference/*
+!reference/README.txt
+__pycache__/
+*.pyc
+
+.venv/
+data/
+.pytest_cache/

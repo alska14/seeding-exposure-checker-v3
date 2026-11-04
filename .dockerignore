@@ -1,0 +1,11 @@
+.venv
+data
+work
+output
+.git
+tests
+docs
+*.xlsx
+.env
+config.yaml
+__pycache__

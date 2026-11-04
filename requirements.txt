@@ -1,0 +1,7 @@
+requests
+pyyaml
+openpyxl
+openai
+yt-dlp
+youtube-transcript-api
+# anthropic   # provider: anthropic 으로 쓸 때만

@@ -1,0 +1,55 @@
+# 이 파일을 복사해 config.yaml 로 만든 뒤 값을 채우세요. (config.yaml 은 git 에 올라가지 않습니다)
+
+# 브랜드명: 제목·설명란·태그·대본·채널주인 댓글에서 찾습니다. 걸리면 '확인됨', 한글은 띄어쓰기·기호 무시, 영문은 단어 단위.
+brand_keywords:
+  - "브랜드명"
+  - "brandname"
+
+# 상품명 키워드: 브랜드명 없이 상품명만 적힌 경우 '의심'으로 분류됩니다.
+product_keywords:
+  - "상품명키워드"
+
+# 상품별 참고 이미지. 키는 엑셀의 '상품명 [색상]'과 정확히 같아야 합니다.
+reference_images:
+  "예시 상품 [블랙]": ["reference/example_black_1.webp"]
+
+# 상품별 특징(로고 위치, 프린트 문구, 배색 등). 키는 색상을 뺀 상품명.
+product_hints:
+  "예시 상품": ""
+
+# validate 정답표: 영상ID -> 그 영상에 실제로 나온 상품 단어
+ground_truth: {}
+
+# 채널 링크 수정: 번호 -> URL
+channel_overrides: {}
+
+# 직접 확인한 내용(리포트 비고에 들어감): 번호 -> 메모
+manual_notes: {}
+
+provider: openai
+model: gpt-5.4-mini
+verify: true
+verify_model: "gpt-5.4"
+image_detail: auto
+default_since: "2026-01-01T00:00:00+09:00"
+window_days: 180
+max_visual_videos_per_channel: 12
+visual_window_days: 60
+outfit_title_keywords: ["룩북", "코디", "착장", "ootd", "하울", "언박싱", "lookbook", "haul", "outfit", "grwm", "unboxing"]
+fetch_comments: true
+comment_window_days: 90
+workers: 2
+max_duration_min: 20
+download_height: 720
+frames_per_video: 16
+focus_frames: 12
+keep_frames: false
+transcript_window_days: 45
+focus_transcript: true
+transcript_langs: ["ko", "en"]
+transcript_max_min: 20
+cookies_from_browser: ""
+
+# prices:   # 모델별 단가(100만 토큰당 USD). 채우면 실행 끝에 예상 비용 표시
+#   gpt-5.4-mini: {input: 0.0, output: 0.0}
+#   gpt-5.4: {input: 0.0, output: 0.0}

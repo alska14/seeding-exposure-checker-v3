@@ -1,0 +1,212 @@
+import json
+import os
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+
+from . import jobs, security
+from .estimate import estimate
+from .store import Store
+
+ROOT = Path(__file__).resolve().parent.parent
+WEB = ROOT / "web"
+REQUIRE_HTTPS = os.environ.get("REQUIRE_HTTPS", "0") == "1"
+RECORD_VALUES = ["", "착용 확인", "업로드했으나 미착용", "업로드 안 함", "확인 불가"]
+
+store = Store(jobs.DATA / "app.db")
+limiter = security.FailLimiter()
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    for jid in store.expired():  # 보관 기간이 지난 작업 삭제
+        jobs.delete_job(store, jid)
+    yield
+
+
+app = FastAPI(title="시딩 노출 확인", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    if REQUIRE_HTTPS and request.headers.get("x-forwarded-proto", request.url.scheme) != "https":
+        return JSONResponse({"error": "HTTPS로만 접속할 수 있습니다"}, status_code=400)
+    resp = await call_next(request)
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Content-Security-Policy"] = ("default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                               "script-src 'self'; img-src 'self' data:; frame-ancestors 'none'")
+    return resp
+
+
+def auth(request: Request, token):
+    ip = request.client.host if request.client else "?"
+    if limiter.blocked(ip):
+        raise HTTPException(429, "요청이 너무 많습니다. 잠시 후 다시 시도하세요")
+    job = store.by_token_hash(security.hash_token(token)) if token else None
+    if not job or job["expires"] < time.time():
+        limiter.fail(ip)
+        raise HTTPException(404, "작업을 찾을 수 없습니다")
+    return job
+
+
+def keys_from(**named):
+    out = {}
+    for env, value in named.items():
+        try:
+            v = security.clean_key(value)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if v:
+            out[env] = v
+    return out
+
+
+def public(job):
+    est = json.loads(job["estimate"]) if job["estimate"] else None
+    return {"stage": job["stage"], "message": job["message"], "estimate": est, "cap_usd": job["cap_usd"],
+            "expires": job["expires"]}
+
+
+@app.post("/api/job")
+async def create(xlsx: UploadFile = File(...), brand: str = Form(...), product: str = Form(""),
+                 ref_labels: str = Form("[]"), refs: list[UploadFile] = File(default=[])):
+    data = await xlsx.read(security.MAX_XLSX + 1)
+    try:
+        security.check_xlsx(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    try:
+        labels = json.loads(ref_labels)
+        assert isinstance(labels, list)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, "참고 사진 이름 형식이 올바르지 않습니다") from e
+    if len(refs) > security.MAX_IMAGES:
+        raise HTTPException(400, f"참고 사진은 최대 {security.MAX_IMAGES}장입니다")
+    images = []
+    for i, f in enumerate(refs):
+        b = await f.read(security.MAX_IMG + 1)
+        if not security.image_ext(b):
+            raise HTTPException(400, "참고 사진은 5MB 이하의 png/jpg/webp/gif만 가능합니다")
+        label = str(labels[i]).strip()[:80] if i < len(labels) else "상품"
+        images.append((label or "상품", b))
+    brand_words = brand.replace("\n", ",").split(",")
+    product_words = product.replace("\n", ",").split(",")
+    _job_id, token = jobs.create_job(store, data, brand_words, product_words, images)
+    return {"token": token}
+
+
+@app.get("/api/job")
+def status(request: Request, x_job_token: str = Header(None)):
+    return public(auth(request, x_job_token))
+
+
+@app.post("/api/job/prepare")
+def prepare(request: Request, x_job_token: str = Header(None), x_youtube_key: str = Header(None)):
+    job = auth(request, x_job_token)
+    keys = keys_from(YOUTUBE_API_KEY=x_youtube_key)
+    if "YOUTUBE_API_KEY" not in keys:
+        raise HTTPException(400, "YouTube API 키가 필요합니다")
+    if job["stage"] in ("queued", "preparing", "analyzing", "rechecking"):
+        raise HTTPException(409, "이미 실행 중입니다")
+    steps = [["all", "--skip-watch", "--xlsx", "input.xlsx", "--config", "config.yaml"]]
+    jobs.start(store, job["id"], steps, keys, "preparing", "prepared", lambda: jobs.after_prepare(store, job["id"]))
+    return {"ok": True}
+
+
+@app.post("/api/job/analyze")
+def analyze(request: Request, cap_usd: float = Form(...), x_job_token: str = Header(None),
+            x_openai_key: str = Header(None)):
+    job = auth(request, x_job_token)
+    keys = keys_from(OPENAI_API_KEY=x_openai_key)
+    if "OPENAI_API_KEY" not in keys:
+        raise HTTPException(400, "OpenAI API 키가 필요합니다")
+    if job["stage"] not in ("prepared", "done", "failed", "interrupted"):
+        raise HTTPException(409, "지금은 영상 분석을 시작할 수 없습니다")
+    if not (0.5 <= cap_usd <= jobs.MAX_CAP_USD):
+        raise HTTPException(400, f"비용 상한은 $0.5 ~ ${jobs.MAX_CAP_USD:g} 사이여야 합니다")
+    cfg = jobs.read_cfg(job["id"])
+    est = estimate(jobs.job_dir(job["id"]), cfg, cap_usd)
+    if est["per_channel"] < 1:
+        raise HTTPException(400, f"상한이 너무 낮아 영상을 한 개도 분석할 수 없습니다 (영상당 약 ${est['cost_per_video']})")
+    cfg["max_visual_videos_per_channel"] = est["per_channel"]
+    jobs.write_cfg(job["id"], cfg)
+    store.update(job["id"], cap_usd=cap_usd, estimate=est)
+    jobs.start(store, job["id"], [["watch", "--config", "config.yaml"], ["report", "--config", "config.yaml"]],
+               keys, "analyzing", "done")
+    return {"ok": True, "estimate": est}
+
+
+@app.post("/api/job/recheck")
+def recheck(request: Request, x_job_token: str = Header(None)):
+    job = auth(request, x_job_token)
+    if job["stage"] in ("queued", "preparing", "analyzing", "rechecking", "created"):
+        raise HTTPException(409, "지금은 재검증을 시작할 수 없습니다")
+    ids = jobs.unconfirmed_ids(job["id"])
+    if not ids:
+        raise HTTPException(400, "재검증할 미확인 채널이 없습니다")
+    steps = [["screen", "--transcripts", "--only", ",".join(ids), "--config", "config.yaml"],
+             ["report", "--config", "config.yaml"]]
+    jobs.start(store, job["id"], steps, {}, "rechecking", "done")
+    return {"ok": True, "channels": len(ids)}
+
+
+@app.get("/api/job/results")
+def results(request: Request, x_job_token: str = Header(None)):
+    job = auth(request, x_job_token)
+    b = jobs.board(job["id"])
+    b["records"] = {str(k): v for k, v in store.records(job["id"]).items()}
+    return b
+
+
+@app.put("/api/job/records/{channel_no}")
+async def set_record(channel_no: int, request: Request, x_job_token: str = Header(None)):
+    job = auth(request, x_job_token)
+    body = await request.json()
+    value = str(body.get("value", ""))
+    if value not in RECORD_VALUES:
+        raise HTTPException(400, "허용되지 않은 값입니다")
+    store.set_record(job["id"], channel_no, value)
+    return {"ok": True}
+
+
+@app.get("/api/job/log")
+def log(request: Request, x_job_token: str = Header(None)):
+    job = auth(request, x_job_token)
+    p = jobs.job_dir(job["id"]) / "log.txt"
+    text = p.read_text(encoding="utf-8", errors="replace")[-4000:] if p.exists() else ""
+    return PlainTextResponse(text)
+
+
+@app.post("/api/job/export")
+def export(request: Request, x_job_token: str = Header(None)):
+    job = auth(request, x_job_token)
+    rows = jobs.board(job["id"])["rows"] or []
+    rec = store.records(job["id"])
+    lines = ["번호,유튜버,자동 판정,근거,확인 결과"]
+    for r in rows:
+        name = '"' + str(r["name"]).replace('"', '""') + '"'
+        ev = '"' + str(r["ev"]).replace('"', '""') + '"'
+        lines.append(",".join([str(r["n"]), name, r["st"], ev, rec.get(r["n"], "")]))
+    return PlainTextResponse("﻿" + "\n".join(lines), media_type="text/csv; charset=utf-8")
+
+
+@app.delete("/api/job")
+def delete(request: Request, x_job_token: str = Header(None)):
+    job = auth(request, x_job_token)
+    jobs.delete_job(store, job["id"])
+    return {"ok": True}
+
+
+@app.get("/")
+def index():
+    return FileResponse(WEB / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=WEB), name="static")
