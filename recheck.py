@@ -296,6 +296,8 @@ def step_comments(sc, args, cfg, targets):
                 sc.jdump(videos, sc.WORK / "videos.json")
                 print(f"  … {done}/{len(pick)}")
     sc.jdump(videos, sc.WORK / "videos.json")
+    if hasattr(sc, "RUN_STATS"):
+        sc.RUN_STATS["comment_videos"] = done - skipped  # 견적 보정용 처리량
     if skipped and not sc.QUOTA["out"]:
         print(f"  ⚠ 네트워크 오류로 {skipped}개 영상은 건너뛰었습니다. 같은 명령을 다시 실행하면 그 영상만 이어서 받습니다.")
     if sc.QUOTA["out"]:
@@ -391,6 +393,8 @@ def cmd_recheck(sc, args, cfg):
             store["_link_cache"] = cache
             replace_kind(store, "link", found, targets_v)
             print(f"  링크 {n}개를 따라가 봤고, 브랜드가 나온 채널 {len(found)}개")
+            if hasattr(sc, "RUN_STATS"):
+                sc.RUN_STATS["links"] = n
     if "seen" in steps:
         print("\n[4] 기존 분석 서술 재검색")
         found = step_seen(sc, cfg, targets)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from . import security
+from . import quote, security
 from .estimate import ROOT, estimate
 from .results import counts, latest_report, read_report
 
@@ -42,10 +42,17 @@ def clean_words(items, limit=40, width=60):
     return out[:limit]
 
 
-def build_config(brand, product, refs):
+def build_config(brand, product, refs, industry="fashion", title_keywords=None, window_days=None, since_date=None):
     base = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
     base["brand_keywords"] = clean_words(brand) or ["브랜드"]
     base["product_keywords"] = clean_words(product)
+    base["industry"] = industry  # 엔진은 읽지 않는다. 검증되지 않은 업종 안내에 쓴다
+    if title_keywords:
+        base["outfit_title_keywords"] = clean_words(title_keywords)
+    if window_days:
+        base["window_days"] = int(window_days)
+    if since_date:  # 발송일이 없는 채널에 쓰는 시작일
+        base["default_since"] = f"{since_date}T00:00:00+09:00"
     base["reference_images"] = refs
     base["product_hints"] = {}
     base["ground_truth"], base["channel_overrides"], base["manual_notes"] = {}, {}, {}
@@ -55,7 +62,8 @@ def build_config(brand, product, refs):
     return base
 
 
-def create_job(store, xlsx: bytes, brand, product, images):
+def create_job(store, xlsx: bytes, brand, product, images, industry="fashion", title_keywords=None, window_days=None,
+               since_date=None):
     """images = [(product_label, bytes)]. 검증은 호출 전에 끝낸 상태여야 한다."""
     job_id = secrets.token_hex(8)
     token = security.new_token()
@@ -68,7 +76,7 @@ def create_job(store, xlsx: bytes, brand, product, images):
         name = f"reference/ref_{i + 1}{ext}"
         (d / name).write_bytes(data)
         refs.setdefault(label, []).append(name)
-    cfg = build_config(brand, product, refs)
+    cfg = build_config(brand, product, refs, industry, title_keywords, window_days, since_date)
     (d / "config.yaml").write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
     store.create_job(job_id, security.hash_token(token), TTL_DAYS)
     return job_id, token
@@ -125,6 +133,10 @@ def run_steps(store, job_id, steps, keys, running, done, on_success=None):
                     return
             if on_success:
                 on_success()
+            try:  # 이번 실행의 실제 소요 시간을 견적 보정용으로 쌓는다. 실패해도 작업 결과에는 영향 없음
+                quote.update_calibration(DATA / "calibration.json", d)
+            except Exception:  # noqa: BLE001
+                pass
             store.update(job_id, stage=done, message="")
     except Exception as e:  # noqa: BLE001
         store.update(job_id, stage="failed", message=security.redact(f"{type(e).__name__}: {e}", secret_values)[:300])

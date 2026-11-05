@@ -185,7 +185,12 @@ def cmd_parse(args, cfg):
 
 
 # ───────────────────────── 2. collect ─────────────────────────
+YT_CALLS = {"n": 0}  # YouTube API 호출 수(대부분 쿼터 1). 실행 기록(metrics)에 쓴다
+RUN_STATS = {}       # 단계가 남기는 처리량(분석한 영상 수 등). 실행 기록에 같이 저장
+
+
 def yt(endpoint, **params):
+    YT_CALLS["n"] += 1
     params["key"] = os.environ["YOUTUBE_API_KEY"]
     r = requests.get(f"{YT}/{endpoint}", params=params, timeout=30)
     if r.status_code != 200:
@@ -984,6 +989,7 @@ def cmd_watch(args, cfg):
         print(f"  {key:>2} {ch['name']}: 영상 {len(entry['videos'])}개 중 {len(cands)}개 대상 (조건 충족 {len(pool)}개, 새로 분석 {len(todo)}개)")
         tasks += [(key, ch, v) for v in todo]
     total, workers = len(tasks), max(1, int(cfg.get("workers", 1)))
+    RUN_STATS.update(videos=total, workers=workers)
     print(f"\n  → 새로 분석할 영상 {total}개 · 동시 작업 {workers}개 (중단해도 저장돼 있어 같은 명령으로 이어집니다)")
 
     def work(task):
@@ -1264,6 +1270,17 @@ def need_keys(order, cfg):
                  + "\n  → .env.example을 .env로 복사한 뒤 키를 채워주세요.")
 
 
+def record_metric(step, seconds, yt_calls, stats):
+    """단계별 실제 소요 시간·YouTube 호출 수·처리량을 work/metrics.json 에 쌓는다 (견적 보정용). 실패해도 실행에는 영향 없음"""
+    try:
+        m = jload(WORK / "metrics.json", [])
+        m.append({"step": step, "seconds": round(seconds, 1), "yt_calls": yt_calls, "stats": stats,
+                  "at": datetime.now(KST).isoformat(timespec="seconds")})
+        jdump(m[-200:], WORK / "metrics.json")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["parse", "collect", "screen", "watch", "validate", "report", "check", "recheck", "all"])
@@ -1290,7 +1307,11 @@ def main():
     need_keys(order, cfg)
     for name in order:
         print(f"\n=== {name} ===")
+        t0, c0 = time.time(), YT_CALLS["n"]
+        RUN_STATS.clear()
         steps[name](args, cfg)
+        if not getattr(args, "dry_run", False):
+            record_metric(name, time.time() - t0, YT_CALLS["n"] - c0, dict(RUN_STATS))
 
 
 if __name__ == "__main__":

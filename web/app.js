@@ -31,24 +31,118 @@ async function api(token, path, opt = {}) {
 }
 
 // ───── 새 작업 화면
-function homeView() {
+let presets = [];
+const FIELD_LABELS = {date: "발송일", no: "번호", name: "이름", product: "상품", option: "옵션", url: "채널 링크"};
+
+function quoteHtml(q) {
+  if (!q) return "";
+  const a = q.analysis || {}, p = q.prepare || {}, r = q.recheck || {};
+  const rows = [];
+  if (q.kind === "rough") {
+    rows.push(["준비 분석 (YouTube 쿼터)", `약 ${(p.yt_quota || 0).toLocaleString()} / 일일 10,000`, "OpenAI 비용 없음"]);
+    rows.push(["영상 분석 (유료)", `약 $${a.usd} · ${a.time} · 영상 약 ${a.videos}개`, a.note]);
+  } else {
+    rows.push(["영상 분석 (유료)", a.videos === a.videos_all
+      ? `전부 분석하면 약 $${a.usd} · ${a.time} · 영상 ${a.videos}개`
+      : `상한 안에서 약 $${a.usd} · ${a.time} · 영상 ${a.videos}개 (전부 분석하면 $${a.usd_all} · ${a.time_all} · ${a.videos_all}개)`, a.note]);
+    rows.push(["무료 재검증 (YouTube 쿼터)", `댓글 ${r.yt_quota.toLocaleString()} · 링크 ${r.links_followed.toLocaleString()}개 따라가기`, r.note]);
+  }
+  return `<table class="quote"><tbody>${rows.map(x => `<tr><th>${esc(x[0])}</th><td>${esc(x[1])}</td><td class="muted">${esc(x[2] || "")}</td></tr>`).join("")}</tbody></table>
+    <p class="muted">${esc(q.basis || "")}</p>`;
+}
+
+async function homeView() {
+  if (!presets.length) { try { presets = await (await fetch("/api/presets")).json(); } catch (e) { presets = []; } }
+  const opts = presets.map(p => `<option value="${esc(p.id)}">${esc(p.label)}${p.verified ? "" : " (영상 분석 미검증)"}</option>`).join("");
   $app.innerHTML = `
   <div class="card"><h2>새 작업 만들기</h2>
-    <p class="muted">시딩 리스트(엑셀)를 올리면, 채널별로 발송일 이후 영상을 모아 제품 노출 여부를 1차로 골라줍니다.</p>
+    <p class="muted">채널별로 기간 안의 영상을 모아 제품·브랜드 노출 여부를 1차로 골라줍니다.</p>
     <div class="notice">업로드한 리스트에는 제3자 정보가 들어 있을 수 있습니다. 서버에는 <b>7일</b> 보관되고 언제든 직접 삭제할 수 있습니다. API 키는 저장하지 않습니다.</div>
     <form id="f">
-      <label>시딩 리스트 (xlsx, 5MB 이하)</label>
-      <input type="file" name="xlsx" accept=".xlsx" required>
-      <p class="muted">3행부터 읽습니다. 열: 발송일 · 번호 · 유튜브 아이디 · 상품명[색상] · 옵션 · 채널 링크</p>
+      <label>업종 (키워드 등 임시값을 채워줍니다. 모두 고칠 수 있어요)</label>
+      <select name="industry" id="industry">${opts}</select>
+      <p class="muted" id="indnote"></p>
+      <label>입력 방식</label>
+      <div class="row"><label style="margin:0;font-weight:400"><input type="radio" name="mode" value="xlsx" checked> 엑셀 올리기</label>
+      <label style="margin:0;font-weight:400"><input type="radio" name="mode" value="text"> 채널 주소 붙여넣기</label>
+      <a href="/api/template.xlsx" download>엑셀 템플릿 내려받기</a></div>
+      <div id="m-xlsx">
+        <input type="file" name="xlsx" accept=".xlsx">
+        <p class="muted">열 순서가 달라도 됩니다. 올리면 열을 자동으로 찾아줍니다. 한 줄에 유튜버 한 명, 5MB 이하.</p>
+        <div id="mapbox" hidden></div>
+      </div>
+      <div id="m-text" hidden>
+        <textarea name="channels_text" rows="5" placeholder="한 줄에 하나씩&#10;@핸들&#10;https://www.youtube.com/@핸들&#10;채널이름 https://www.youtube.com/@핸들"></textarea>
+        <p class="muted" id="textcount"></p>
+      </div>
       <label>브랜드명 (쉼표로 구분, 표기 변형도 함께)</label>
       <input type="text" name="brand" placeholder="예: 브랜드명, brandname" required maxlength="400">
       <label>상품명 키워드 (선택, 쉼표로 구분)</label>
-      <input type="text" name="product" placeholder="예: 풋볼져지, 크롭티" maxlength="600">
+      <input type="text" name="product" id="product" maxlength="600">
+      <label>상품 이름 (엑셀에 상품 열이 없을 때 쓰는 이름)</label>
+      <input type="text" name="product_name" value="상품" maxlength="60">
+      <label>노출 가능성이 높은 영상의 제목 키워드 (이 단어가 있는 영상을 먼저 분석)</label>
+      <textarea name="title_keywords" id="titlekw" rows="2" maxlength="600"></textarea>
+      <div class="row"><div><label>수집 기간 (발송일 이후 며칠)</label><input type="number" name="window_days" id="window" min="7" max="365"></div>
+      <div><label>발송일이 없을 때 시작일</label><input type="date" name="since_date" id="since"></div></div>
+      <div id="roughquote"></div>
       <label>상품 참고 사진 (선택, 최대 30장)</label>
       <div class="reflist" id="refs"></div>
       <button type="button" id="addref" class="ghost">+ 사진 추가</button>
       <div class="row" style="margin-top:16px"><button class="primary" type="submit">작업 만들기</button><span id="msg" class="muted"></span></div>
     </form></div>`;
+  const form = document.getElementById("f");
+  const applyPreset = () => {
+    const p = presets.find(x => x.id === form.industry.value) || presets[0];
+    if (!p) return;
+    form.title_keywords.value = p.title_keywords.join(", ");
+    form.window_days.value = p.window_days;
+    form.product.placeholder = p.product_example;
+    document.getElementById("indnote").innerHTML = p.verified
+      ? `영상에서 볼 것: ${esc(p.look_for)}. <b>실제 데이터(93명)로 검증된 업종</b>입니다.`
+      : `영상에서 볼 것: ${esc(p.look_for)}. <b>⚠ 영상 분석은 아직 이 업종에서 검증되지 않았습니다</b>(분석 기준이 의류 착용입니다). 제목·설명란·댓글·링크 점검은 쓸 수 있습니다.`;
+  };
+  form.industry.onchange = applyPreset;
+  const d90 = new Date(Date.now() - 90 * 864e5); form.since_date.value = d90.toISOString().slice(0, 10);
+  applyPreset();
+  let mapState = null;  // 열 연결: {header_row, map}
+  const showMode = () => {
+    const text = form.mode.value === "text";
+    document.getElementById("m-xlsx").hidden = text; document.getElementById("m-text").hidden = !text;
+    if (text) showTextQuote(); else if (!form.xlsx.files[0]) document.getElementById("roughquote").innerHTML = "";
+  };
+  form.querySelectorAll("input[name=mode]").forEach(r => r.onchange = showMode);
+  let tq = null;
+  const showTextQuote = () => {
+    const n = form.channels_text.value.split("\n").filter(l => l.trim()).length;
+    document.getElementById("textcount").textContent = n ? `채널 ${n}곳` : "";
+    clearTimeout(tq);
+    tq = setTimeout(async () => {
+      if (!n || n > 300) { document.getElementById("roughquote").innerHTML = ""; return; }
+      const fd = new FormData(); fd.append("channels", n);
+      try { document.getElementById("roughquote").innerHTML = "<h3>대략의 견적</h3>" + quoteHtml(await (await fetch("/api/quote-preview", {method: "POST", body: fd})).json()); } catch (e) { /* 견적은 참고용 */ }
+    }, 400);
+  };
+  form.channels_text.oninput = showTextQuote;
+  form.xlsx.onchange = async () => {
+    const box = document.getElementById("mapbox"); mapState = null; box.hidden = true;
+    const f = form.xlsx.files[0]; if (!f) return;
+    const fd = new FormData(); fd.append("xlsx", f);
+    try {
+      const r = await fetch("/api/xlsx-preview", {method: "POST", body: fd});
+      if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+      const pv = await r.json();
+      document.getElementById("roughquote").innerHTML = `<h3>대략의 견적 (채널 ${pv.channels}곳)</h3>` + quoteHtml(pv.rough);
+      if (pv.standard) { box.hidden = false; box.innerHTML = `<p class="muted">✔ 템플릿 형식으로 읽었습니다. 채널 ${pv.channels}곳.</p>`; return; }
+      mapState = {header_row: pv.header_row, map: pv.map};
+      const colOpts = sel => `<option value="">(사용 안 함)</option>` + Array.from({length: pv.ncols}, (_, i) => `<option value="${i}" ${sel === i ? "selected" : ""}>${i + 1}번째 열: ${esc((pv.rows[Math.max(0, pv.header_row - 1)] || [])[i] || (pv.rows[0] || [])[i] || "")}</option>`).join("");
+      box.hidden = false;
+      box.innerHTML = `<p class="muted">열 순서가 템플릿과 달라서 자동으로 찾았습니다. 틀리면 고쳐주세요 (채널 ${pv.channels}곳 인식, 한 줄에 유튜버 한 명으로 읽습니다).</p>
+        <div class="row">${Object.keys(FIELD_LABELS).map(k => `<label style="margin:0;font-weight:400">${FIELD_LABELS[k]}<select data-k="${k}">${colOpts(pv.map[k])}</select></label>`).join("")}</div>
+        <div style="overflow:auto"><table class="quote"><tbody>${pv.rows.map(rw => `<tr>${rw.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+      box.querySelectorAll("select").forEach(s => s.onchange = () => { mapState.map[s.dataset.k] = s.value === "" ? null : +s.value; });
+    } catch (err) { box.hidden = false; box.innerHTML = `<div class="notice err">⚠ ${esc(err.message)}</div>`; }
+  };
   const refs = document.getElementById("refs");
   document.getElementById("addref").onclick = () => {
     if (refs.children.length >= 30) return;
@@ -62,9 +156,11 @@ function homeView() {
     e.preventDefault();
     const msg = document.getElementById("msg");
     const fd = new FormData();
-    fd.append("xlsx", e.target.xlsx.files[0]);
-    fd.append("brand", e.target.brand.value);
-    fd.append("product", e.target.product.value);
+    const f0 = e.target.xlsx.files[0];
+    if (e.target.mode.value === "text") fd.append("channels_text", e.target.channels_text.value);
+    else if (f0) { fd.append("xlsx", f0); if (mapState) fd.append("mapping", JSON.stringify(mapState)); }
+    else { msg.textContent = "⚠ 엑셀 파일을 고르거나 '채널 주소 붙여넣기'를 선택하세요"; return; }
+    for (const k of ["brand", "product", "product_name", "industry", "title_keywords", "window_days", "since_date"]) fd.append(k, e.target[k].value);
     const labels = [];
     refs.querySelectorAll(".r").forEach(r => {
       const f = r.querySelector("input[type=file]").files[0];
@@ -89,6 +185,8 @@ async function jobView(token) {
   $app.innerHTML = `
   ${fresh ? `<div class="notice"><b>이 주소를 꼭 저장하세요.</b> 주소를 아는 사람만 이 작업을 열 수 있고, 잃어버리면 다시 찾을 수 없습니다.<div class="tokenbox">${esc(url)}</div></div>` : ""}
   <div class="card" id="head"></div>
+  <div class="card" id="quotecard"><h3>견적 (추정)</h3><div id="quotebody" class="muted">계산 중…</div>
+    <label id="ackrow" hidden style="font-weight:400"><input type="checkbox" id="ack"> 이 업종의 영상 분석은 검증되지 않았음을 이해했고, 그래도 진행합니다</label></div>
   <div class="steps" id="steps"></div>
   <div class="card" id="logcard" hidden><h3>진행 로그</h3><pre class="log" id="log"></pre></div>
   <div id="board"></div>
@@ -104,7 +202,7 @@ async function jobView(token) {
     try { s = await (await api(token, "/api/job")).json(); }
     catch (e) { $app.innerHTML = `<div class="card"><div class="notice err">작업을 찾을 수 없습니다. 주소가 맞는지, 보관 기간(7일)이 지나지 않았는지 확인하세요.</div><a href="#/">새 작업 만들기</a></div>`; clearInterval(poll); return; }
     const stateKey = JSON.stringify([s.stage, s.message, s.estimate, s.cap_usd]);
-    if (stateKey !== lastState) { lastState = stateKey; renderState(token, s); }  // 바뀐 게 없으면 다시 그리지 않는다(입력 중인 키·계획 출력이 지워지지 않게)
+    if (stateKey !== lastState) { lastState = stateKey; renderState(token, s); loadQuote(token); }  // 바뀐 게 없으면 다시 그리지 않는다(입력 중인 키·계획 출력이 지워지지 않게)
     const running = RUNNING.includes(s.stage);
     document.getElementById("logcard").hidden = !(running || s.stage === "failed");
     if (running || s.stage === "failed") document.getElementById("log").textContent = await (await api(token, "/api/job/log")).text();
@@ -152,12 +250,20 @@ function renderState(token, s) {
   };
   const yt = document.getElementById("ytkey"), oa = document.getElementById("oakey");
   document.getElementById("prep").onclick = () => run("/api/job/prepare", {method: "POST", headers: {"X-Youtube-Key": yt.value.trim()}}, [yt]);
+  document.getElementById("cap").oninput = () => loadQuote(token);
   document.getElementById("ana").onclick = () => {
     const fd = new FormData(); fd.append("cap_usd", document.getElementById("cap").value);
+    if (document.getElementById("ack").checked) fd.append("ack_unverified", "1");
     run("/api/job/analyze", {method: "POST", body: fd, headers: {"X-Openai-Key": oa.value.trim()}}, [oa]);
   };
   const rcap = document.getElementById("rcap"), ryt = document.getElementById("rytkey"), roa = document.getElementById("roakey");
-  const capForm = () => { const fd = new FormData(); if (rcap.value) fd.append("cap_usd", rcap.value); return fd; };
+  const capForm = () => {
+    const fd = new FormData();
+    if (rcap.value) fd.append("cap_usd", rcap.value);
+    if (document.getElementById("ack").checked) fd.append("ack_unverified", "1");
+    return fd;
+  };
+  rcap.oninput = () => loadQuote(token);
   document.getElementById("rplan").onclick = async () => {
     const out = document.getElementById("rplanout");
     out.hidden = false; out.textContent = "계산 중… (아무것도 호출하거나 저장하지 않습니다)";
@@ -166,6 +272,22 @@ function renderState(token, s) {
   };
   document.getElementById("rec").onclick = () => run("/api/job/recheck",
     {method: "POST", body: capForm(), headers: {"X-Youtube-Key": ryt.value.trim(), "X-Openai-Key": roa.value.trim()}}, [ryt, roa]);
+}
+
+// ───── 견적 패널: 비용 상한 입력에 따라 다시 계산
+let quoteTimer = null;
+function loadQuote(token) {
+  clearTimeout(quoteTimer);
+  quoteTimer = setTimeout(async () => {
+    const body = document.getElementById("quotebody");
+    if (!body) return;
+    const cap = (document.getElementById("rcap") || {}).value || (document.getElementById("cap") || {}).value || "";
+    try {
+      const q = await (await api(token, "/api/job/quote" + (cap ? "?cap_usd=" + encodeURIComponent(cap) : ""))).json();
+      body.className = ""; body.innerHTML = quoteHtml(q);
+      document.getElementById("ackrow").hidden = q.verified;
+    } catch (e) { body.textContent = "견적을 계산하지 못했습니다: " + e.message; }
+  }, 250);
 }
 
 // ───── 보드
