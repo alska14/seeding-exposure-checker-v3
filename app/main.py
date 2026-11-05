@@ -74,6 +74,19 @@ def public(job):
             "expires": job["expires"]}
 
 
+@app.get("/api/diag/download")
+def diag_download(x_diag_token: str = Header(None)):
+    """배포 환경에서 영상 다운로드가 되는지 확인. DIAG_TOKEN 환경변수를 설정한 서버에서만 켜진다."""
+    expected = os.environ.get("DIAG_TOKEN", "")
+    if not expected:
+        raise HTTPException(404, "Not Found")
+    import hmac
+    if not x_diag_token or not hmac.compare_digest(x_diag_token, expected):
+        raise HTTPException(404, "Not Found")
+    from . import diag
+    return diag.check_download()
+
+
 @app.get("/api/presets")
 def list_presets():
     return presets.public_list()
