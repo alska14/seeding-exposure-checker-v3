@@ -136,8 +136,13 @@ function renderState(token, s) {
       <p class="muted">상한을 넘지 않게 채널당 분석할 영상 수를 자동으로 줄입니다. 영상당 약 $${est ? est.cost_per_video : 0.03} 추정이며 실제 비용은 다를 수 있습니다.</p>
       <div style="margin-top:8px"><button class="primary" id="ana" ${canAnalyze ? "" : "disabled"}>분석 시작</button></div></div>
     <div class="step"><h3>③ 미확인 재검증</h3>
-      <p class="muted">미확인 채널만 자막에서 브랜드 언급을 다시 찾습니다. 키는 필요 없습니다.</p>
-      <div style="margin-top:8px"><button id="rec" ${canRecheck ? "" : "disabled"}>재검증 시작</button></div></div>`;
+      <p class="muted">미확인 채널만 다시 점검합니다: 댓글 재검토 · 표기 변형 · 설명란 링크 · 분석 서술. 비용 상한을 적으면 아직 안 본 영상도 분석합니다(유료).</p>
+      <label>영상 분석 비용 상한 (USD, 비우면 무료 점검만)</label><input type="number" id="rcap" min="0.5" step="0.5" placeholder="예: 5">
+      <label>YouTube API 키</label><input type="password" id="rytkey" autocomplete="off" spellcheck="false" placeholder="저장되지 않습니다">
+      <label>OpenAI API 키 (영상 분석할 때만)</label><input type="password" id="roakey" autocomplete="off" spellcheck="false" placeholder="저장되지 않습니다">
+      <div class="row" style="margin-top:8px"><button id="rplan" ${canRecheck ? "" : "disabled"}>계획 보기</button>
+      <button class="primary" id="rec" ${canRecheck ? "" : "disabled"}>재검증 시작</button></div>
+      <pre class="log" id="rplanout" hidden></pre></div>`;
   const run = async (path, opt, keyInputs) => {
     try { await api(token, path, opt); } catch (e) { alert(e.message); return; }
     keyInputs.forEach(i => { i.value = ""; });  // 키를 화면에서도 지운다
@@ -150,7 +155,16 @@ function renderState(token, s) {
     const fd = new FormData(); fd.append("cap_usd", document.getElementById("cap").value);
     run("/api/job/analyze", {method: "POST", body: fd, headers: {"X-Openai-Key": oa.value.trim()}}, [oa]);
   };
-  document.getElementById("rec").onclick = () => run("/api/job/recheck", {method: "POST"}, []);
+  const rcap = document.getElementById("rcap"), ryt = document.getElementById("rytkey"), roa = document.getElementById("roakey");
+  const capForm = () => { const fd = new FormData(); if (rcap.value) fd.append("cap_usd", rcap.value); return fd; };
+  document.getElementById("rplan").onclick = async () => {
+    const out = document.getElementById("rplanout");
+    out.hidden = false; out.textContent = "계산 중… (아무것도 호출하거나 저장하지 않습니다)";
+    try { out.textContent = await (await api(token, "/api/job/recheck-plan", {method: "POST", body: capForm()})).text(); }
+    catch (e) { out.textContent = "⚠ " + e.message; }
+  };
+  document.getElementById("rec").onclick = () => run("/api/job/recheck",
+    {method: "POST", body: capForm(), headers: {"X-Youtube-Key": ryt.value.trim(), "X-Openai-Key": roa.value.trim()}}, [ryt, roa]);
 }
 
 // ───── 보드

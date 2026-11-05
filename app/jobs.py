@@ -19,8 +19,12 @@ ENGINE = Path(os.environ.get("ENGINE_PATH", ROOT / "seeding_checker.py"))
 MAX_JOBS = int(os.environ.get("MAX_JOBS", "1"))
 MAX_CAP_USD = float(os.environ.get("MAX_CAP_USD", "50"))
 TTL_DAYS = int(os.environ.get("JOB_TTL_DAYS", "7"))
+MAX_COMMENT_QUOTA = int(os.environ.get("MAX_COMMENT_QUOTA", "2000"))  # 재검증 한 번에 쓸 YouTube 쿼터 상한
+MAX_LINKS = int(os.environ.get("MAX_LINKS", "300"))  # 재검증 한 번에 따라갈 설명란 링크 수
 SECRET_ENV = ("YOUTUBE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 _sem = threading.BoundedSemaphore(MAX_JOBS)
+# 엔진은 격리 모드(-I)로 실행한다: 작업 폴더의 파일이 import 되지 않게. -I 는 PYTHONIOENCODING 같은 환경변수를 무시하므로 -X utf8 로 한글 출력을 보장한다
+PY = [sys.executable, "-I", "-X", "utf8"]
 
 PRICES = {"gpt-5.4-mini": {"input": 0.75, "output": 4.5}, "gpt-5.4": {"input": 2.5, "output": 15.0}}
 
@@ -102,7 +106,7 @@ def run_steps(store, job_id, steps, keys, running, done, on_success=None):
             for args in steps:
                 with open(log, "a", encoding="utf-8") as lf:
                     lf.write(f"\n$ engine {' '.join(args[:1])}\n")
-                    p = subprocess.Popen([sys.executable, "-I", str(ENGINE), *args], cwd=d, env=_env(keys),
+                    p = subprocess.Popen([*PY, str(ENGINE), *args], cwd=d, env=_env(keys),
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                          encoding="utf-8", errors="replace")
                     tail = []
@@ -139,10 +143,19 @@ def after_prepare(store, job_id):
     store.update(job_id, estimate=estimate(job_dir(job_id), read_cfg(job_id), MAX_CAP_USD))
 
 
-def unconfirmed_ids(job_id):
-    rep = latest_report(job_dir(job_id))
-    rows = read_report(rep) if rep else []
-    return [str(r["n"]) for r in rows or [] if r["st"] == "미확인"]
+def recheck_args(cap_usd):
+    """엔진 recheck 명령의 인자. cap_usd가 0이면 영상 분석(--budget)은 하지 않는다."""
+    args = ["recheck", "--config", "config.yaml", "--comment-quota", str(MAX_COMMENT_QUOTA), "--max-links", str(MAX_LINKS)]
+    if cap_usd and cap_usd > 0:
+        args += ["--budget", f"{cap_usd:g}"]
+    return args
+
+
+def recheck_plan(job_id, cap_usd):
+    """recheck --dry-run 출력을 돌려준다. 키가 필요 없고 아무것도 호출·저장하지 않는다."""
+    p = subprocess.run([*PY, str(ENGINE), *recheck_args(cap_usd), "--dry-run"], cwd=job_dir(job_id), env=_env({}),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    return security.redact((p.stdout + p.stderr)[-4000:])
 
 
 def board(job_id):

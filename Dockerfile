@@ -7,7 +7,7 @@ WORKDIR /srv
 COPY requirements.txt requirements-web.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-web.txt
 
-COPY seeding_checker.py config.example.yaml ./
+COPY seeding_checker.py recheck.py config.example.yaml ./
 COPY app ./app
 COPY web ./web
 

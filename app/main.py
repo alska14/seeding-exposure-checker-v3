@@ -143,18 +143,42 @@ def analyze(request: Request, cap_usd: float = Form(...), x_job_token: str = Hea
     return {"ok": True, "estimate": est}
 
 
-@app.post("/api/job/recheck")
-def recheck(request: Request, x_job_token: str = Header(None)):
+RECHECK_BLOCKED = ("queued", "preparing", "analyzing", "rechecking", "created")
+
+
+def check_cap(cap_usd):
+    if cap_usd and not (0.5 <= cap_usd <= jobs.MAX_CAP_USD):
+        raise HTTPException(400, f"비용 상한은 $0.5 ~ ${jobs.MAX_CAP_USD:g} 사이여야 합니다 (영상 분석을 하지 않으려면 비워두세요)")
+
+
+@app.post("/api/job/recheck-plan")
+def recheck_plan(request: Request, cap_usd: float = Form(0), x_job_token: str = Header(None)):
+    """재검증을 실행하지 않고 대상 수·쿼터·예상 비용만 보여준다 (키 불필요)."""
     job = auth(request, x_job_token)
-    if job["stage"] in ("queued", "preparing", "analyzing", "rechecking", "created"):
+    if job["stage"] in RECHECK_BLOCKED:
+        raise HTTPException(409, "지금은 계획을 볼 수 없습니다")
+    check_cap(cap_usd)
+    return PlainTextResponse(jobs.recheck_plan(job["id"], cap_usd))
+
+
+@app.post("/api/job/recheck")
+def recheck(request: Request, cap_usd: float = Form(0), x_job_token: str = Header(None),
+            x_youtube_key: str = Header(None), x_openai_key: str = Header(None)):
+    """미확인 채널 재검증: 댓글 재검토·표기 변형·설명란 링크·분석 서술(+ cap_usd가 있으면 안 본 영상 분석)."""
+    job = auth(request, x_job_token)
+    if job["stage"] in RECHECK_BLOCKED:
         raise HTTPException(409, "지금은 재검증을 시작할 수 없습니다")
-    ids = jobs.unconfirmed_ids(job["id"])
-    if not ids:
-        raise HTTPException(400, "재검증할 미확인 채널이 없습니다")
-    steps = [["screen", "--transcripts", "--only", ",".join(ids), "--config", "config.yaml"],
-             ["report", "--config", "config.yaml"]]
-    jobs.start(store, job["id"], steps, {}, "rechecking", "done")
-    return {"ok": True, "channels": len(ids)}
+    check_cap(cap_usd)
+    keys = keys_from(YOUTUBE_API_KEY=x_youtube_key, OPENAI_API_KEY=x_openai_key)
+    if "YOUTUBE_API_KEY" not in keys:
+        raise HTTPException(400, "댓글 재검토에 YouTube API 키가 필요합니다")
+    if cap_usd and "OPENAI_API_KEY" not in keys:
+        raise HTTPException(400, "영상 분석에는 OpenAI API 키가 필요합니다")
+    if not cap_usd:
+        keys.pop("OPENAI_API_KEY", None)  # 영상 분석을 안 하면 OpenAI 키는 엔진에 넘기지 않는다
+    store.update(job["id"], cap_usd=cap_usd or None)
+    jobs.start(store, job["id"], [jobs.recheck_args(cap_usd)], keys, "rechecking", "done")
+    return {"ok": True}
 
 
 @app.get("/api/job/results")

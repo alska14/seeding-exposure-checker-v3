@@ -129,13 +129,54 @@ def test_engine_failure_message_is_redacted():
     assert bad.encode() not in all_bytes_under_data()
 
 
-def test_recheck_and_delete():
+def prepared_job():
     t = new_job()
     client.post("/api/job/prepare", headers=H(t, **{"X-Youtube-Key": YT}))
     wait(t, {"prepared"})
-    r = client.post("/api/job/recheck", headers=H(t))
-    assert r.status_code == 200 and r.json()["channels"] == 1
+    return t
+
+
+def test_recheck_plan_needs_no_key_and_runs_nothing():
+    t = prepared_job()
+    r = client.post("/api/job/recheck-plan", headers=H(t), data={"cap_usd": "5"})
+    assert r.status_code == 200 and "dry-run" in r.text and YT not in r.text
+    assert client.get("/api/job", headers=H(t)).json()["stage"] == "prepared"  # 상태가 바뀌지 않는다
+    assert client.post("/api/job/recheck-plan", headers=H(t), data={"cap_usd": "99999"}).status_code == 400
+
+
+def test_recheck_requires_keys_and_validates_cap():
+    t = prepared_job()
+    assert client.post("/api/job/recheck", headers=H(t)).status_code == 400                      # YouTube 키 없음
+    assert client.post("/api/job/recheck", headers=H(t, **{"X-Youtube-Key": YT}), data={"cap_usd": "5"}).status_code == 400  # 영상 분석인데 OpenAI 키 없음
+    assert client.post("/api/job/recheck", headers=H(t, **{"X-Youtube-Key": YT}), data={"cap_usd": "0.1"}).status_code == 400
+    assert client.get("/api/job", headers=H(t)).json()["stage"] == "prepared"
+
+
+def test_recheck_free_runs_without_openai_key_and_updates_board():
+    t = prepared_job()
+    r = client.post("/api/job/recheck", headers=H(t, **{"X-Youtube-Key": YT, "X-Openai-Key": OA}))
+    assert r.status_code == 200
     assert wait(t, {"done", "failed"})["stage"] == "done"
+    res = client.get("/api/job/results", headers=H(t)).json()
+    assert res["counts"]["의심"] == 1 and res["counts"]["미확인"] == 0           # 재검증이 채널A를 의심으로 올림
+    d = next(p for p in Path(conftest.TMP, "jobs").iterdir() if (p / "seen_env.json").exists()
+             and json.loads((p / "seen_env.json").read_text(encoding="utf-8"))["cmd"][0] == "recheck")
+    seen = json.loads((d / "seen_env.json").read_text(encoding="utf-8"))
+    assert seen["yt"] and not seen["oa"] and "--budget" not in seen["cmd"]       # 영상 분석을 안 하면 OpenAI 키는 엔진에 안 넘어간다
+    for secret in (YT, OA):
+        assert secret.encode() not in all_bytes_under_data()
+
+
+def test_recheck_with_budget_passes_budget_and_openai_key_then_delete():
+    t = prepared_job()
+    r = client.post("/api/job/recheck", headers=H(t, **{"X-Youtube-Key": YT, "X-Openai-Key": OA}), data={"cap_usd": "5"})
+    assert r.status_code == 200
+    assert wait(t, {"done", "failed"})["stage"] == "done"
+    d = next(p for p in Path(conftest.TMP, "jobs").iterdir() if (p / "seen_env.json").exists()
+             and "--budget" in json.loads((p / "seen_env.json").read_text(encoding="utf-8"))["cmd"])
+    seen = json.loads((d / "seen_env.json").read_text(encoding="utf-8"))
+    assert seen["oa"] and seen["cmd"][seen["cmd"].index("--budget") + 1] == "5"
+    assert OA.encode() not in all_bytes_under_data()
     assert client.delete("/api/job", headers=H(t)).status_code == 200
     assert client.get("/api/job", headers=H(t)).status_code == 404
 
