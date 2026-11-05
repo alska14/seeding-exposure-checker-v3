@@ -70,8 +70,13 @@ def keys_from(**named):
 
 def public(job):
     est = json.loads(job["estimate"]) if job["estimate"] else None
-    return {"stage": job["stage"], "message": job["message"], "estimate": est, "cap_usd": job["cap_usd"],
-            "expires": job["expires"]}
+    running = job["stage"] in ("queued", "preparing", "analyzing", "rechecking")
+    out = {"stage": job["stage"], "message": job["message"], "estimate": est, "cap_usd": job["cap_usd"],
+           "expires": job["expires"], "created": job["created"], "stage_since": job.get("stage_since"), "now": time.time(),
+           "progress": jobs.progress(job["id"]) if running else None}
+    out.update(jobs.meta(job["id"]))
+    out["industry_label"] = presets.get(out["industry"])["label"]
+    return out
 
 
 @app.get("/api/diag/download")

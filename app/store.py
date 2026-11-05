@@ -19,6 +19,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS records(job_id TEXT, channel_no INTEGER, value TEXT, updated REAL,
               PRIMARY KEY(job_id, channel_no));
             """)
+            try:  # 이전 버전 DB에는 없는 열: 단계가 시작된 시각(경과 시간 표시용)
+                db.execute("ALTER TABLE jobs ADD COLUMN stage_since REAL")
+            except sqlite3.OperationalError:
+                pass
             # 서버가 꺼질 때 실행 중이던 작업은 중단 처리
             db.execute("UPDATE jobs SET stage='interrupted', message='서버가 재시작되어 중단됨. 같은 단계를 다시 시작하세요' "
                        "WHERE stage IN ('preparing','analyzing','rechecking')")
@@ -31,8 +35,9 @@ class Store:
     def create_job(self, job_id, token_hash, ttl_days):
         now = time.time()
         with _lock, self._db() as db:
-            db.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
-                       (job_id, token_hash, now, now + ttl_days * 86400, "created", "", None, None))
+            db.execute("INSERT INTO jobs(id, token_hash, created, expires, stage, message, cap_usd, estimate, stage_since) "
+                       "VALUES(?,?,?,?,?,?,?,?,?)",
+                       (job_id, token_hash, now, now + ttl_days * 86400, "created", "", None, None, now))
 
     def by_token_hash(self, h):
         with self._db() as db:
@@ -42,6 +47,8 @@ class Store:
     def update(self, job_id, **fields):
         if "estimate" in fields and not isinstance(fields["estimate"], str):
             fields["estimate"] = json.dumps(fields["estimate"], ensure_ascii=False)
+        if "stage" in fields:
+            fields["stage_since"] = time.time()
         cols = ", ".join(f"{k}=?" for k in fields)
         with _lock, self._db() as db:
             db.execute(f"UPDATE jobs SET {cols} WHERE id=?", (*fields.values(), job_id))

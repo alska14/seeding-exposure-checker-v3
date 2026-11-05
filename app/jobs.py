@@ -172,6 +172,53 @@ def recheck_plan(job_id, cap_usd):
     return security.redact((p.stdout + p.stderr)[-4000:])
 
 
+STEP_LABELS = {"parse": "엑셀 읽는 중", "collect": "채널·영상 수집 중", "screen": "키워드 검색 중", "watch": "영상 분석 중",
+               "report": "리포트 만드는 중", "recheck": "미확인 재검증 중"}
+
+
+def progress(job_id):
+    """가장 최근 엔진 실행 로그에서 지금 하는 일과 진행률(done/total)을 읽는다. 알 수 없으면 done/total 은 None"""
+    log = job_dir(job_id) / "log.txt"
+    if not log.exists():
+        return None
+    text = log.read_text(encoding="utf-8", errors="replace")
+    i = text.rfind("\n$ engine ")
+    text = text[i:] if i >= 0 else text  # 마지막 실행 구간만
+    steps = re.findall(r"=== (\w+) ===", text)
+    step = steps[-1] if steps else ""
+    out = {"step": STEP_LABELS.get(step, ""), "done": None, "total": None}
+    if step == "collect":
+        n = len(re.findall(r"(?m)^\s+\d+\s+.+?:\s*(?:발송 후 영상|⚠)", text))
+        try:
+            total = quote.count_input_channels(job_dir(job_id) / "input.xlsx")
+        except Exception:  # noqa: BLE001
+            total = None
+        out.update(done=min(n, total) if total else n, total=total)
+    elif step in ("watch", "recheck"):
+        hits = [(m.start(), int(m.group(1)), int(m.group(2))) for m in re.finditer(r"\[(\d+)/(\d+)\]", text)]
+        hits += [(m.start(), int(m.group(1)), int(m.group(2))) for m in re.finditer(r"…\s*(\d+)/(\d+)", text)]
+        if hits:
+            _, d, t = max(hits)
+            out.update(done=d, total=t)
+        if step == "recheck":
+            heads = re.findall(r"(?m)^\[(\d)\] (.+)$", text)
+            if heads:
+                out["step"] = {"1": "댓글 받는 중", "2": "표기 변형 찾는 중", "3": "설명란 링크 따라가는 중", "4": "분석 서술 다시 보는 중",
+                               "5": "안 본 영상 분석 중"}.get(heads[-1][0], out["step"])
+    return out
+
+
+def meta(job_id):
+    """작업 화면 머리글에 쓰는 요약: 브랜드, 업종, 채널 수"""
+    cfg = read_cfg(job_id)
+    try:
+        channels = quote.count_input_channels(job_dir(job_id) / "input.xlsx")
+    except Exception:  # noqa: BLE001
+        channels = None
+    return {"brand": (cfg.get("brand_keywords") or [""])[0], "industry": cfg.get("industry", "fashion"), "channels": channels,
+            "window_days": cfg.get("window_days")}
+
+
 def board(job_id):
     rep = latest_report(job_dir(job_id))
     rows = read_report(rep) if rep else None

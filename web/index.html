@@ -8,14 +8,15 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <a class="logo" href="#/">시딩 노출 확인</a>
-    <button id="theme" type="button" class="ghost">테마</button>
-  </header>
-  <main id="app"></main>
-  <p class="foot">자동 판정은 1차 선별입니다. '미확인'은 "안 올림"이 아니라 "도구가 못 찾음"이며, 확정과 미확인 채널은 사람이 확인합니다.</p>
-</div>
+<header class="top">
+  <a class="brand" href="#/" aria-label="새 작업 만들기">
+    <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="1" width="9" height="9" rx="2" fill="currentColor"/><rect x="12" y="1" width="9" height="9" rx="2" fill="currentColor" opacity=".45"/><rect x="1" y="12" width="9" height="9" rx="2" fill="currentColor" opacity=".45"/><rect x="12" y="12" width="9" height="9" rx="2" fill="currentColor" opacity=".2"/></svg>
+    시딩 노출 확인
+  </a>
+  <button id="theme" type="button" class="btn quiet" aria-label="밝게/어둡게 전환">테마</button>
+</header>
+<main id="app" class="page"></main>
+<footer class="page foot">자동 판정은 1차 선별입니다. <b>'미확인'은 "안 올림"이 아니라 "도구가 못 찾음"</b>이며, 확정과 미확인 채널은 사람이 확인합니다.</footer>
 <script src="/static/app.js"></script>
 </body>
 </html>
