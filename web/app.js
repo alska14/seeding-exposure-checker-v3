@@ -11,7 +11,7 @@ const KINDS = [["ok", "확인됨", s => s.startsWith("확인됨")], ["sus", "의
 const FIELD_LABELS = {date: "발송일", no: "번호", name: "이름", product: "상품", option: "옵션", url: "채널 링크"};
 
 let poll = null, board = null, lastState = "", serverVideo = false, flash = "", presets = [], job = null;
-let tab = null, filter = "all", query = "", boardKey = "", hitRow = null, prevRunning = false, quoteTimer = null, tabChosen = false, firstBoard = true;
+let tab = null, filter = "all", query = "", boardKey = "", hitRow = null, prevRunning = false, quoteTimer = null, tabChosen = false, firstBoard = true, demoMode = false;
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const safeUrl = u => (/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(u) ? esc(u) : "");
@@ -20,8 +20,30 @@ const fmtDur = sec => { sec = Math.max(0, Math.round(sec)); const m = Math.floor
 
 function route() {
   clearInterval(poll);
+  demoMode = false;
   const m = location.hash.match(/^#\/j\/([A-Za-z0-9_-]{20,})$/);
-  m ? jobView(m[1]) : homeView();
+  if (m) jobView(m[1]);
+  else if (location.hash === "#/demo") demoView();
+  else homeView();
+}
+
+// ───── 예시 리포트: 키 없이 결과 화면을 둘러볼 수 있게 만든 가짜 데이터(채널 이름도 모두 예시)
+function demoView() {
+  demoMode = true;
+  const mix = [["확인됨(텍스트)", 4], ["확인됨(댓글)", 1], ["확인됨(영상)", 3], ["의심(수동확인)", 23], ["미확인", 58], ["업로드 없음", 3], ["채널 오류", 1]];
+  const rows = []; let n = 0;
+  for (const [st, c] of mix) for (let i = 0; i < c; i++) { n++; rows.push({st, key: n * 37 % 93}); }
+  rows.sort((a, b) => a.key - b.key);
+  const sus = ["분석 서술: 풋볼져지", "표기 변형: 예시브랜드≈예시브랜", "링크: 예시브랜드"];
+  board = {records: {}, rows: rows.map((r, i) => ({
+    n: i + 1, name: `예시 채널 ${i + 1}`, date: "2026-06-05", prod: "예시 상품[블랙] / 예시 상품[화이트]", url: "", cnt: 20 + i % 40, st: r.st, scope: "",
+    ev: r.st.startsWith("확인됨") ? "예시브랜드" : r.st.startsWith("의심") ? sus[i % 3] : "",
+    note: r.st.startsWith("의심") ? "간접 단서에 따른 후보입니다. 근거 영상을 열어 실제로 나오는지 확인하세요." : "", vid: ""}))};
+  $app.innerHTML = `<div class="notice" style="margin-top:0"><b>예시 데이터입니다.</b> 채널 이름과 결과는 모두 가짜이고, 결과 화면이 어떻게 보이는지 둘러보는 용도예요.
+      실제 분석은 <a href="#/">새 작업 만들기</a>에서 시작합니다.</div>
+    <div class="jobhead"><a class="back" href="#/">← 새 작업</a><h1>예시브랜드 노출 확인<span class="sub">패션·의류 · 채널 93곳 · 예시 리포트</span></h1></div>
+    <section id="tab-report"></section>`;
+  drawReport("demo", {brand: "예시브랜드", industry_label: "패션·의류"});
 }
 
 async function api(token, path, opt = {}) {
@@ -59,7 +81,7 @@ async function homeView() {
   let industry = "fashion", mode = "xlsx", mapState = null, channelCount = 0, roughHtml = "", sheetName = "";
   $app.innerHTML = `
   <div class="intro"><h1>채널별 제품 노출을 한 번에 확인</h1>
-    <p>유튜버 목록을 넣으면 기간 안의 영상에서 우리 브랜드·제품이 나왔는지 골라냅니다. 결과는 리포트로 보고 엑셀로 받아요.</p></div>
+    <p>유튜버 목록을 넣으면 기간 안의 영상에서 우리 브랜드·제품이 나왔는지 골라냅니다. 결과는 리포트로 보고 엑셀로 받아요. <a href="#/demo">예시 리포트 먼저 보기</a></p></div>
   <div class="home">
     <form id="f" autocomplete="off">
       <section class="card"><div class="sec-title"><span class="num">1</span><h2>업종</h2></div>
@@ -487,12 +509,13 @@ function drawReport(token, s) {
   qi.oninput = e => { query = e.target.value; hitRow = null; drawReport(token, s); const i = $("tab-report").querySelector("#q"); i.focus(); i.setSelectionRange(query.length, query.length); };
   root.querySelectorAll("select[data-n]").forEach(sel => sel.onchange = async () => {
     try {
-      await api(token, "/api/job/records/" + sel.dataset.n, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({value: sel.value})});
-      r.records[sel.dataset.n] = sel.value;
+      if (!demoMode) await api(token, "/api/job/records/" + sel.dataset.n, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({value: sel.value})});
+      r.records[sel.dataset.n] = sel.value;  // 예시 화면에서는 서버에 저장하지 않고 화면에서만 바꾼다
       root.querySelectorAll(`select[data-n="${sel.dataset.n}"]`).forEach(o => { o.value = sel.value; });  // 같은 채널이 여러 표에 있으면 같이 맞춘다
     } catch (e) { alert(e.message); }
   });
   $("csv").onclick = async () => {
+    if (demoMode) { alert("예시 화면에서는 내려받을 수 없어요. 실제 작업에서 CSV로 받을 수 있습니다."); return; }
     const blob = await (await api(token, "/api/job/export", {method: "POST"})).blob();
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "확인기록.csv"; a.click();
   };
