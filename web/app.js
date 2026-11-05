@@ -499,10 +499,12 @@ function drawReport(token, s) {
   $("print").onclick = () => window.print();
 }
 
+// 기본은 밝은 화면. 어둡게 바꾸면 이 브라우저에 기억한다(저장이 막혀 있어도 동작에는 문제 없다)
+try { if (localStorage.getItem("theme") === "dark") document.documentElement.dataset.theme = "dark"; } catch (e) { /* 저장소 사용 불가 */ }
 $("theme").onclick = () => {
   const r = document.documentElement;
-  const dark = r.dataset.theme === "dark" || (!r.dataset.theme && matchMedia("(prefers-color-scheme:dark)").matches);
-  r.dataset.theme = dark ? "light" : "dark";
+  r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+  try { localStorage.setItem("theme", r.dataset.theme); } catch (e) { /* 저장소 사용 불가 */ }
 };
 window.addEventListener("hashchange", () => { boardKey = ""; board = null; lastState = ""; flash = ""; filter = "all"; query = ""; hitRow = null; tab = null; route(); });
 route();
