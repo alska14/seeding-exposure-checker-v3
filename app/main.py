@@ -8,7 +8,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import intake, jobs, presets, quote, security
+from . import helper, intake, jobs, presets, quote, security
 from .estimate import estimate
 from .store import Store
 
@@ -133,6 +133,56 @@ def parse_options(industry, title_keywords, window_days, since_date):
     return (industry if industry in presets.PRESETS else presets.DEFAULT_PRESET), words, (window_days or preset["window_days"]), since_date
 
 
+def require_server_video():
+    if not jobs.SERVER_VIDEO:
+        raise HTTPException(400, "이 서버는 영상 분석을 직접 하지 않습니다(YouTube가 서버의 영상 다운로드를 막습니다). "
+                                 "'분석 패키지 받기'로 내 PC에서 실행하고 결과를 올려주세요")
+
+
+@app.get("/api/config")
+def public_config():
+    return {"server_video": jobs.SERVER_VIDEO}
+
+
+@app.post("/api/job/helper-package")
+def helper_package(request: Request, cap_usd: float = Form(...), ack_unverified: str = Form(""), x_job_token: str = Header(None)):
+    """영상 분석을 내 PC에서 돌릴 패키지(zip). 키·토큰은 들어 있지 않다."""
+    from fastapi.responses import Response
+    job = auth(request, x_job_token)
+    if job["stage"] not in ("prepared", "done", "failed", "interrupted"):
+        raise HTTPException(409, "준비 분석이 끝난 뒤에 받을 수 있습니다")
+    check_cap(cap_usd or None)
+    if not cap_usd:
+        raise HTTPException(400, "비용 상한(USD)을 입력하세요")
+    check_industry(job, ack_unverified)
+    try:
+        data, manifest = helper.build_package(job["id"], cap_usd)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e)) from e
+    store.update(job["id"], cap_usd=cap_usd)
+    return Response(data, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="seeding-helper.zip"',
+                                                                 "X-Helper-Videos": str(manifest["videos"])})
+
+
+@app.post("/api/job/helper-result")
+async def helper_result(request: Request, result: UploadFile = File(...), x_job_token: str = Header(None)):
+    """PC 도우미가 만든 result.json 을 검증해서 합치고 리포트를 다시 만든다."""
+    job = auth(request, x_job_token)
+    if job["stage"] in RECHECK_BLOCKED:
+        raise HTTPException(409, "지금은 결과를 올릴 수 없습니다")
+    raw = await result.read(helper.MAX_RESULT + 1)
+    try:
+        counts = helper.merge_result(job["id"], raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if not counts["accepted"]:
+        why = "설정 지문이 달라 모두 제외됐습니다. 패키지를 받은 뒤 설정을 바꿨거나 다른 작업의 결과일 수 있습니다" if counts["rejected_sig"] \
+            else "이 작업의 영상과 맞는 결과가 없습니다"
+        raise HTTPException(400, f"받아들인 결과가 없습니다. {why} {counts}")
+    jobs.start(store, job["id"], [["report", "--config", "config.yaml"]], {}, "analyzing", "done")
+    return {"ok": True, **counts}
+
+
 def check_industry(job, ack):
     """검증되지 않은 업종의 영상 분석은 사용자가 확인했을 때만 시작한다"""
     ind = jobs.read_cfg(job["id"]).get("industry", presets.DEFAULT_PRESET)
@@ -222,6 +272,7 @@ def prepare(request: Request, x_job_token: str = Header(None), x_youtube_key: st
 def analyze(request: Request, cap_usd: float = Form(...), ack_unverified: str = Form(""), x_job_token: str = Header(None),
             x_openai_key: str = Header(None)):
     job = auth(request, x_job_token)
+    require_server_video()
     check_industry(job, ack_unverified)
     keys = keys_from(OPENAI_API_KEY=x_openai_key)
     if "OPENAI_API_KEY" not in keys:
@@ -269,6 +320,7 @@ def recheck(request: Request, cap_usd: float = Form(0), ack_unverified: str = Fo
         raise HTTPException(409, "지금은 재검증을 시작할 수 없습니다")
     check_cap(cap_usd)
     if cap_usd:
+        require_server_video()
         check_industry(job, ack_unverified)
     keys = keys_from(YOUTUBE_API_KEY=x_youtube_key, OPENAI_API_KEY=x_openai_key)
     if "YOUTUBE_API_KEY" not in keys:

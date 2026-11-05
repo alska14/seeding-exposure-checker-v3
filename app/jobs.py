@@ -21,6 +21,8 @@ MAX_CAP_USD = float(os.environ.get("MAX_CAP_USD", "50"))
 TTL_DAYS = int(os.environ.get("JOB_TTL_DAYS", "7"))
 MAX_COMMENT_QUOTA = int(os.environ.get("MAX_COMMENT_QUOTA", "2000"))  # 재검증 한 번에 쓸 YouTube 쿼터 상한
 MAX_LINKS = int(os.environ.get("MAX_LINKS", "300"))  # 재검증 한 번에 따라갈 설명란 링크 수
+# 서버에서 영상 다운로드·분석을 직접 돌릴지. 클라우드 IP는 YouTube가 막으므로 기본은 끄고, 영상 분석은 사용자 PC 도우미로 한다
+SERVER_VIDEO = os.environ.get("SERVER_VIDEO", "0") == "1"
 SECRET_ENV = ("YOUTUBE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 _sem = threading.BoundedSemaphore(MAX_JOBS)
 # 엔진은 격리 모드(-I)로 실행한다: 작업 폴더의 파일이 import 되지 않게. -I 는 PYTHONIOENCODING 같은 환경변수를 무시하므로 -X utf8 로 한글 출력을 보장한다

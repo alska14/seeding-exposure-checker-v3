@@ -7,7 +7,7 @@ const STAGE_KO = {created: "작업 만듦", queued: "순서 대기", preparing: 
 const REC = ["", "착용 확인", "업로드했으나 미착용", "업로드 안 함", "확인 불가"];
 const GROUPS = [["전체", null], ["확인됨", s => s.startsWith("확인됨")], ["의심", s => s.startsWith("의심")],
   ["미확인", s => s === "미확인"], ["업로드 없음", s => s === "업로드 없음"], ["채널 오류", s => s === "채널 오류"]];
-let poll = null, board = null, grp = 0, query = "", lastState = "";
+let poll = null, board = null, grp = 0, query = "", lastState = "", serverVideo = false, flash = "";
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const safeUrl = u => (/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(u) ? esc(u) : "");
@@ -180,6 +180,7 @@ async function homeView() {
 
 // ───── 작업 화면
 async function jobView(token) {
+  try { serverVideo = !!(await (await fetch("/api/config")).json()).server_video; } catch (e) { serverVideo = false; }
   const fresh = sessionStorage.getItem("new_token_" + token.slice(0, 8));
   const url = location.href;
   $app.innerHTML = `
@@ -218,6 +219,7 @@ function renderState(token, s) {
   const running = RUNNING.includes(s.stage);
   document.getElementById("head").innerHTML = `<div class="row"><h2 style="margin:0">작업 상태</h2><span class="badge ${s.stage === "failed" ? "b-err" : running ? "b-sus" : "b-ok"}">${esc(STAGE_KO[s.stage] || s.stage)}</span></div>
     ${s.message && (running || s.stage === "failed" || s.stage === "interrupted") ? `<p class="${s.stage === "failed" ? "notice err" : "muted"}">${esc(s.message)}</p>` : ""}
+    ${flash ? `<p class="notice">${esc(flash)}</p>` : ""}
     <p class="muted">보관 만료: ${new Date(s.expires * 1000).toLocaleString("ko-KR")}</p>`;
   const est = s.estimate;
   const canPrep = !running && ["created", "failed", "interrupted", "prepared", "done"].includes(s.stage);
@@ -228,17 +230,27 @@ function renderState(token, s) {
       <p class="muted">제목·설명란·댓글에서 브랜드 언급을 찾습니다. YouTube 쿼터만 쓰고 OpenAI 비용은 없습니다.</p>
       <label>YouTube API 키</label><input type="password" id="ytkey" autocomplete="off" spellcheck="false" placeholder="저장되지 않습니다">
       <div style="margin-top:8px"><button class="primary" id="prep" ${canPrep ? "" : "disabled"}>${s.stage === "created" ? "준비 분석 시작" : "다시 실행"}</button></div></div>
-    <div class="step ${s.stage === "prepared" ? "on" : ""}"><h3>② 영상 분석 (유료)</h3>
+    ${serverVideo ? `<div class="step ${s.stage === "prepared" ? "on" : ""}"><h3>② 영상 분석 (유료)</h3>
       ${est ? `<p class="muted">대상 채널 ${est.channels}곳 · 분석 가능한 영상 ${est.videos_all}개 · 전부 분석 시 약 $${est.est_usd_all} (정가 기준 추정)</p>` : `<p class="muted">① 준비 분석이 끝나면 예상 비용이 나옵니다.</p>`}
       <label>비용 상한 (USD)</label><input type="number" id="cap" min="0.5" step="0.5" value="${s.cap_usd || 5}">
       <label>OpenAI API 키</label><input type="password" id="oakey" autocomplete="off" spellcheck="false" placeholder="저장되지 않습니다">
       <p class="muted">상한을 넘지 않게 채널당 분석할 영상 수를 자동으로 줄입니다. 영상당 약 $${est ? est.cost_per_video : 0.03} 추정이며 실제 비용은 다를 수 있습니다.</p>
-      <div style="margin-top:8px"><button class="primary" id="ana" ${canAnalyze ? "" : "disabled"}>분석 시작</button></div></div>
+      <div style="margin-top:8px"><button class="primary" id="ana" ${canAnalyze ? "" : "disabled"}>분석 시작</button></div></div>`
+    : `<div class="step ${s.stage === "prepared" ? "on" : ""}"><h3>② 영상 분석 (유료 · 내 PC에서)</h3>
+      <p class="muted">YouTube가 서버의 영상 다운로드를 막아서, 이 단계만 내 컴퓨터에서 실행합니다. 키는 내 PC에서만 입력하고 서버로 보내지 않습니다.</p>
+      <label>비용 상한 (USD)</label><input type="number" id="cap" min="0.5" step="0.5" value="${s.cap_usd || 5}">
+      <ol class="muted" style="padding-left:18px;margin:8px 0">
+        <li>아래에서 <b>분석 패키지</b>(zip)를 받아 압축을 풉니다.</li>
+        <li>폴더의 <b>읽어보세요.txt</b>대로 준비(Python·ffmpeg)하고 <b>실행.bat</b>을 실행합니다. OpenAI 키는 그 창에서 입력합니다.</li>
+        <li>끝나면 생기는 <b>result.json</b>을 아래에서 올립니다.</li></ol>
+      <div class="row"><button class="primary" id="pkg" ${canAnalyze ? "" : "disabled"}>분석 패키지 받기</button></div>
+      <label>결과 올리기 (result.json)</label><input type="file" id="resfile" accept=".json,application/json">
+      <div class="row" style="margin-top:8px"><button id="resup" ${canRecheck ? "" : "disabled"}>결과 올리기</button><span class="muted" id="resmsg"></span></div></div>`}
     <div class="step"><h3>③ 미확인 재검증</h3>
-      <p class="muted">미확인 채널만 다시 점검합니다: 댓글 재검토 · 표기 변형 · 설명란 링크 · 분석 서술. 비용 상한을 적으면 아직 안 본 영상도 분석합니다(유료).</p>
-      <label>영상 분석 비용 상한 (USD, 비우면 무료 점검만)</label><input type="number" id="rcap" min="0.5" step="0.5" placeholder="예: 5">
+      <p class="muted">미확인 채널만 다시 점검합니다: 댓글 재검토 · 표기 변형 · 설명란 링크 · 분석 서술.${serverVideo ? " 비용 상한을 적으면 아직 안 본 영상도 분석합니다(유료)." : " 안 본 영상의 분석은 ②의 PC 도우미로 합니다."}</p>
+      ${serverVideo ? `<label>영상 분석 비용 상한 (USD, 비우면 무료 점검만)</label><input type="number" id="rcap" min="0.5" step="0.5" placeholder="예: 5">` : ""}
       <label>YouTube API 키</label><input type="password" id="rytkey" autocomplete="off" spellcheck="false" placeholder="저장되지 않습니다">
-      <label>OpenAI API 키 (영상 분석할 때만)</label><input type="password" id="roakey" autocomplete="off" spellcheck="false" placeholder="저장되지 않습니다">
+      ${serverVideo ? `<label>OpenAI API 키 (영상 분석할 때만)</label><input type="password" id="roakey" autocomplete="off" spellcheck="false" placeholder="저장되지 않습니다">` : ""}
       <div class="row" style="margin-top:8px"><button id="rplan" ${canRecheck ? "" : "disabled"}>계획 보기</button>
       <button class="primary" id="rec" ${canRecheck ? "" : "disabled"}>재검증 시작</button></div>
       <pre class="log" id="rplanout" hidden></pre></div>`;
@@ -248,22 +260,46 @@ function renderState(token, s) {
     await window._refresh();
     clearInterval(poll); poll = setInterval(window._refresh, 2500);
   };
-  const yt = document.getElementById("ytkey"), oa = document.getElementById("oakey");
+  const yt = document.getElementById("ytkey");
   document.getElementById("prep").onclick = () => run("/api/job/prepare", {method: "POST", headers: {"X-Youtube-Key": yt.value.trim()}}, [yt]);
   document.getElementById("cap").oninput = () => loadQuote(token);
-  document.getElementById("ana").onclick = () => {
-    const fd = new FormData(); fd.append("cap_usd", document.getElementById("cap").value);
-    if (document.getElementById("ack").checked) fd.append("ack_unverified", "1");
-    run("/api/job/analyze", {method: "POST", body: fd, headers: {"X-Openai-Key": oa.value.trim()}}, [oa]);
-  };
+  if (serverVideo) {
+    const oa = document.getElementById("oakey");
+    document.getElementById("ana").onclick = () => {
+      const fd = new FormData(); fd.append("cap_usd", document.getElementById("cap").value);
+      if (document.getElementById("ack").checked) fd.append("ack_unverified", "1");
+      run("/api/job/analyze", {method: "POST", body: fd, headers: {"X-Openai-Key": oa.value.trim()}}, [oa]);
+    };
+  } else {
+    document.getElementById("pkg").onclick = async () => {
+      const fd = new FormData(); fd.append("cap_usd", document.getElementById("cap").value);
+      if (document.getElementById("ack").checked) fd.append("ack_unverified", "1");
+      try {
+        const blob = await (await api(token, "/api/job/helper-package", {method: "POST", body: fd})).blob();
+        const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "seeding-helper.zip"; a.click();
+      } catch (e) { alert(e.message); }
+    };
+    document.getElementById("resup").onclick = async () => {
+      const f = document.getElementById("resfile").files[0], msg = document.getElementById("resmsg");
+      if (!f) { msg.textContent = "result.json 파일을 고르세요"; return; }
+      const fd = new FormData(); fd.append("result", f);
+      msg.textContent = "올리는 중…";
+      try {
+        const r = await (await api(token, "/api/job/helper-result", {method: "POST", body: fd})).json();
+        flash = `✔ PC 도우미 결과 영상 ${r.accepted}개를 반영했습니다` + (r.rejected_sig + r.rejected_unknown + r.rejected_bad ? ` (제외 ${r.rejected_sig + r.rejected_unknown + r.rejected_bad}개: 설정 불일치 ${r.rejected_sig}, 이 작업에 없는 영상 ${r.rejected_unknown}, 형식 오류 ${r.rejected_bad})` : "");
+        lastState = "";  // 상태 카드를 다시 그려 안내 문구를 보여준다
+        await window._refresh(); clearInterval(poll); poll = setInterval(window._refresh, 2500);
+      } catch (e) { msg.textContent = "⚠ " + e.message; }
+    };
+  }
   const rcap = document.getElementById("rcap"), ryt = document.getElementById("rytkey"), roa = document.getElementById("roakey");
   const capForm = () => {
     const fd = new FormData();
-    if (rcap.value) fd.append("cap_usd", rcap.value);
+    if (rcap && rcap.value) fd.append("cap_usd", rcap.value);
     if (document.getElementById("ack").checked) fd.append("ack_unverified", "1");
     return fd;
   };
-  rcap.oninput = () => loadQuote(token);
+  if (rcap) rcap.oninput = () => loadQuote(token);
   document.getElementById("rplan").onclick = async () => {
     const out = document.getElementById("rplanout");
     out.hidden = false; out.textContent = "계산 중… (아무것도 호출하거나 저장하지 않습니다)";
@@ -271,7 +307,8 @@ function renderState(token, s) {
     catch (e) { out.textContent = "⚠ " + e.message; }
   };
   document.getElementById("rec").onclick = () => run("/api/job/recheck",
-    {method: "POST", body: capForm(), headers: {"X-Youtube-Key": ryt.value.trim(), "X-Openai-Key": roa.value.trim()}}, [ryt, roa]);
+    {method: "POST", body: capForm(), headers: roa ? {"X-Youtube-Key": ryt.value.trim(), "X-Openai-Key": roa.value.trim()} : {"X-Youtube-Key": ryt.value.trim()}},
+    roa ? [ryt, roa] : [ryt]);
 }
 
 // ───── 견적 패널: 비용 상한 입력에 따라 다시 계산
@@ -337,5 +374,5 @@ document.getElementById("theme").onclick = () => {
   const dark = r.dataset.theme === "dark" || (!r.dataset.theme && matchMedia("(prefers-color-scheme:dark)").matches);
   r.dataset.theme = dark ? "light" : "dark";
 };
-window.addEventListener("hashchange", () => { boardKey = ""; board = null; lastState = ""; route(); });
+window.addEventListener("hashchange", () => { boardKey = ""; board = null; lastState = ""; flash = ""; route(); });
 route();
