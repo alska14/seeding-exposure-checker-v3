@@ -7,7 +7,7 @@ const STAGE_KO = {created: "작업 만듦", queued: "순서 대기", preparing: 
 const REC = ["", "착용 확인", "업로드했으나 미착용", "업로드 안 함", "확인 불가"];
 const GROUPS = [["전체", null], ["확인됨", s => s.startsWith("확인됨")], ["의심", s => s.startsWith("의심")],
   ["미확인", s => s === "미확인"], ["업로드 없음", s => s === "업로드 없음"], ["채널 오류", s => s === "채널 오류"]];
-let poll = null, board = null, grp = 0, query = "";
+let poll = null, board = null, grp = 0, query = "", lastState = "";
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const safeUrl = u => (/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(u) ? esc(u) : "");
@@ -103,7 +103,8 @@ async function jobView(token) {
     let s;
     try { s = await (await api(token, "/api/job")).json(); }
     catch (e) { $app.innerHTML = `<div class="card"><div class="notice err">작업을 찾을 수 없습니다. 주소가 맞는지, 보관 기간(7일)이 지나지 않았는지 확인하세요.</div><a href="#/">새 작업 만들기</a></div>`; clearInterval(poll); return; }
-    renderState(token, s);
+    const stateKey = JSON.stringify([s.stage, s.message, s.estimate, s.cap_usd]);
+    if (stateKey !== lastState) { lastState = stateKey; renderState(token, s); }  // 바뀐 게 없으면 다시 그리지 않는다(입력 중인 키·계획 출력이 지워지지 않게)
     const running = RUNNING.includes(s.stage);
     document.getElementById("logcard").hidden = !(running || s.stage === "failed");
     if (running || s.stage === "failed") document.getElementById("log").textContent = await (await api(token, "/api/job/log")).text();
@@ -214,5 +215,5 @@ document.getElementById("theme").onclick = () => {
   const dark = r.dataset.theme === "dark" || (!r.dataset.theme && matchMedia("(prefers-color-scheme:dark)").matches);
   r.dataset.theme = dark ? "light" : "dark";
 };
-window.addEventListener("hashchange", () => { boardKey = ""; board = null; route(); });
+window.addEventListener("hashchange", () => { boardKey = ""; board = null; lastState = ""; route(); });
 route();
