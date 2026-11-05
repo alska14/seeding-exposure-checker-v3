@@ -182,9 +182,9 @@ def test_recheck_with_budget_passes_budget_and_openai_key_then_delete():
 
 
 def test_config_is_server_built_and_safe():
-    new_job("랑가,\x00bad\x07," + "x" * 100)
+    new_job("하늘,\x00bad\x07," + "x" * 100)
     cfgs = [p.read_text(encoding="utf-8") for p in Path(conftest.TMP, "jobs").glob("*/config.yaml")]
-    mine = [c for c in cfgs if "랑가" in c]
+    mine = [c for c in cfgs if "하늘" in c]
     assert mine
     for cfg in mine:
         assert "cookies_from_browser: ''" in cfg or 'cookies_from_browser: ""' in cfg
